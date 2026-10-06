@@ -13,7 +13,8 @@ def main():
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--random-birth-chance", type=float, default=0.2,
                         help="Probability of one random point birth per turn (0..1)")
-    parser.add_argument("--dissolve-chance", type=float, default=0.0005)
+    parser.add_argument("--dissolve-chance", type=float, default=0.02)
+    parser.add_argument("--automaton-rounds", type=int, default=-1, help="Full automaton rounds; 0 disables, -1 unlimited; dissolution always runs")
     parser.add_argument("--round-limit", type=int, default=200)
     parser.add_argument("--agents", choices=("off", "random", "heuristic", "neural", "search"), default="heuristic")
     parser.add_argument("--search-depth", type=int, default=4)
@@ -32,7 +33,7 @@ def main():
         parser.error("--steps must be nonnegative")
     if not 0 <= args.random_birth_chance <= 1:
         parser.error("--random-birth-chance must be between 0 and 1")
-    if not 0 <= args.dissolve_chance <= 1 or args.round_limit < 1:
+    if not 0 <= args.dissolve_chance <= 1 or args.round_limit < 1 or args.automaton_rounds < -1:
         parser.error("Invalid dissolve chance or round limit")
     simulation = Simulation.random_field(args.width, args.height, args.density,
                                         rules=Rules(random_birth_chance=args.random_birth_chance,
@@ -40,14 +41,16 @@ def main():
     if not args.console:
         from dots_simulation.gui import launch
         modes = dict(off="Выключены", random="Случайные", heuristic="Эвристика", neural="Нейросеть", search="Нейросеть + поиск")
-        launch(simulation, args.density, args.seed, args.round_limit, modes[args.agents], args.model, search_config)
+        launch(simulation, args.density, args.seed, args.round_limit, modes[args.agents], args.model, search_config,
+               None if args.automaton_rounds == -1 else args.automaton_rounds)
         return
     print("R/B: points; r/b: empty owned territory; .: free cell")
     print("Generation 0")
     print(simulation.board.to_ascii())
     from dots_simulation.game import Game
     from dots_simulation.agents import HeuristicAgent, NeuralAgent, RandomAgent, load_policies
-    game = Game(simulation, agents_enabled=args.agents != "off", round_limit=args.round_limit)
+    game = Game(simulation, agents_enabled=args.agents != "off", round_limit=args.round_limit,
+                automaton_rounds=None if args.automaton_rounds == -1 else args.automaton_rounds)
     from dots_simulation.model import SPECIES
     if args.model:
         policies = load_policies(args.model)

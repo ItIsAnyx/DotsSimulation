@@ -18,6 +18,9 @@ def chain_game():
         board.set_cell(r, c, Color.BLUE)
     for r, c in ((2, 2), (2, 3), (3, 2)):
         board.set_cell(r, c, Color.RED)
+    # Previously dissolved cells are permanently unavailable for placement.
+    # Keep this fixture focused on a chain of enemy captures, not expansion.
+    board.dissolved = {(r, c) for r, c in board.cells() if board.owners[r][c] == Color.EMPTY}
     game = Game(Simulation(board, quiet_rules(capture_enabled=True)))
     game.advance()
     game.players[Color.BLUE].budget = 9
@@ -76,6 +79,7 @@ class SearchTests(unittest.TestCase):
 
     def test_observation_distinguishes_geometry_and_distant_changes(self):
         game = chain_game()
+        game.simulation.board.dissolved.clear()
         action = Action(ActionKind.CAPTURE, 2, 2)
         first = action_features(game, [action])[0]
         self.assertEqual(len(first), len(FEATURE_NAMES))

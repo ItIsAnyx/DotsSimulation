@@ -24,6 +24,9 @@ class SimulationApp:
         self.root = root
         self.simulation = simulation
         self.round_limit = 200
+        self.automaton_rounds = tk.DoubleVar(value=8)
+        self.automaton_unlimited = tk.BooleanVar(value=True)
+        self.automaton_limit_text = tk.StringVar(value="Без ограничения")
         self.agent_mode = tk.StringVar(value="Эвристика")
         self.policies = None
         self.search_config = SearchConfig()
@@ -69,7 +72,7 @@ class SimulationApp:
 
     def _build_ui(self):
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(4, weight=1)
+        self.root.rowconfigure(5, weight=1)
         toolbar = ttk.Frame(self.root, padding=(12, 10))
         toolbar.grid(row=0, column=0, sticky="ew")
         self.run_button = ttk.Button(toolbar, text="Запуск", command=self.toggle)
@@ -115,8 +118,18 @@ class SimulationApp:
         ttk.Button(agents_bar, text="Загрузить веса…", command=self.load_model).pack(side="left")
         ttk.Label(agents_bar, textvariable=self.agent_status).pack(side="left", padx=10)
 
+        cutoff_bar = ttk.Frame(self.root, padding=(12, 0, 12, 10))
+        cutoff_bar.grid(row=4, column=0, sticky="ew")
+        ttk.Label(cutoff_bar, text="Выключить автомат через N ходов:").pack(side="left")
+        ttk.Scale(cutoff_bar, from_=0, to=200, variable=self.automaton_rounds, length=220,
+                  command=self._change_automaton_limit).pack(side="left", padx=8)
+        ttk.Label(cutoff_bar, textvariable=self.automaton_limit_text, width=18).pack(side="left")
+        ttk.Checkbutton(cutoff_bar, text="Без ограничения", variable=self.automaton_unlimited,
+                        command=self._change_automaton_limit).pack(side="left", padx=8)
+        ttk.Label(cutoff_bar, text="0 — выключен сразу. Растворение и доход работают всегда.").pack(side="left")
+
         body = ttk.Frame(self.root, padding=(12, 0))
-        body.grid(row=4, column=0, sticky="nsew")
+        body.grid(row=5, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
         self.canvas = tk.Canvas(body, background=BACKGROUND, highlightthickness=1,
@@ -127,7 +140,7 @@ class SimulationApp:
         self.canvas.bind("<Leave>", lambda _: self.hover.set(""))
 
         footer = ttk.Frame(self.root, padding=12)
-        footer.grid(row=5, column=0, sticky="ew")
+        footer.grid(row=6, column=0, sticky="ew")
         legend = ttk.Frame(footer)
         legend.pack(anchor="w")
         for color, name in ((Color.RED, "Красные"), (Color.BLUE, "Синие")):
@@ -236,7 +249,8 @@ class SimulationApp:
 
     def _advance(self):
         if self.game.simulation is not self.simulation:
-            self.game = Game(self.simulation, self.agent_mode.get() != "Выключены", self.round_limit)
+            self.game = Game(self.simulation, self.agent_mode.get() != "Выключены", self.round_limit,
+                             automaton_rounds=self._automaton_limit())
         if self.game.done:
             self.pause()
             return
@@ -325,12 +339,23 @@ class SimulationApp:
         self._cancel_phase()
         self.simulation = Simulation(self.initial_board, self.simulation.rules)
         self.simulation.random.setstate(self.initial_random_state)
-        self.game = Game(self.simulation, self.agent_mode.get() != "Выключены", self.round_limit)
+        self.game = Game(self.simulation, self.agent_mode.get() != "Выключены", self.round_limit,
+                         automaton_rounds=self._automaton_limit())
         self._reset_agents()
         self.last_result = None
         self.phase_statistics_before = self.simulation.board.statistics()
         self.step_ms = 0
         self.refresh()
+
+    def _automaton_limit(self):
+        return None if self.automaton_unlimited.get() else round(self.automaton_rounds.get())
+
+    def _change_automaton_limit(self, _=None):
+        limit = self._automaton_limit()
+        self.game.automaton_rounds = limit
+        self.automaton_limit_text.set("Без ограничения" if limit is None else f"{limit} раундов")
+        if hasattr(self, "canvas"):
+            self.refresh()
 
     def _read_birth_chance(self):
         chance = float(self.birth_chance.get().replace(",", "."))
@@ -371,7 +396,8 @@ class SimulationApp:
         self.simulation = Simulation.random_field(width, height, density,
                                                   rules=replace(self.simulation.rules, random_birth_chance=chance,
                                                                 interior_dissolve_chance=dissolve), seed=seed)
-        self.game = Game(self.simulation, self.agent_mode.get() != "Выключены", self.round_limit)
+        self.game = Game(self.simulation, self.agent_mode.get() != "Выключены", self.round_limit,
+                         automaton_rounds=self._automaton_limit())
         self._reset_agents()
         self.initial_board = self.simulation.board.copy()
         self.initial_random_state = self.simulation.random.getstate()
@@ -387,7 +413,8 @@ class SimulationApp:
         self.new_field()
 
     def refresh(self):
-        self.generation.set(f"Раунд {self.game.round}/{self.round_limit} · Далее: {self.game.next_phase}")
+        state = "автомат включён" if self.game.automaton_active else "только растворение и доход"
+        self.generation.set(f"Раунд {self.game.round}/{self.round_limit} · {state} · Далее: {self.game.next_phase}")
         stats = self.simulation.board.statistics()
         self.statistics.set("    |    ".join(
             f"{name}: точек {stats[key]['points']}, территория {stats[key]['territory']}, "
@@ -504,9 +531,12 @@ class SimulationApp:
 
 
 def launch(simulation: Simulation, density: float, seed: int, round_limit=200, mode="Эвристика", model=None,
-           search_config=None):
+           search_config=None, automaton_rounds=None):
     root = tk.Tk()
     app = SimulationApp(root, simulation)
+    app.automaton_unlimited.set(automaton_rounds is None)
+    app.automaton_rounds.set(8 if automaton_rounds is None else automaton_rounds)
+    app._change_automaton_limit()
     app.search_config = search_config or SearchConfig()
     app.density.set(str(density))
     app.seed.set(str(seed))

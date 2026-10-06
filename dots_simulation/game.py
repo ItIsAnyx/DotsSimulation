@@ -54,9 +54,13 @@ class Game:
     is sampled once immediately after the automaton phase.
     """
 
-    def __init__(self, simulation: Simulation, agents_enabled=True, round_limit=200, victory_reward=50):
+    def __init__(self, simulation: Simulation, agents_enabled=True, round_limit=200, victory_reward=50,
+                 automaton_rounds=None):
         if round_limit < 1:
             raise ValueError("round_limit must be positive")
+        if automaton_rounds is not None and (not isinstance(automaton_rounds, int) or automaton_rounds < 0):
+            raise ValueError("automaton_rounds must be nonnegative or None")
+        self.automaton_rounds = automaton_rounds
         self.simulation = simulation
         self.agents_enabled = agents_enabled
         self.round_limit = round_limit
@@ -68,10 +72,9 @@ class Game:
         self.done = False
         self.winner = Color.EMPTY
         self.touched = {color: set() for color in SPECIES}
-        # First empty-territory reward is global per coordinate per episode.
+        # First neutral-cell reward is global per coordinate per episode.
         self.rewarded_empty = {(r, c) for r, c in simulation.board.cells()
-                               if simulation.board.points[r][c] == Color.EMPTY
-                               and simulation.board.owners[r][c] != Color.EMPTY}
+                               if simulation.board.owners[r][c] != Color.EMPTY}
         self.last_result = None
 
     def clone(self):
@@ -79,13 +82,18 @@ class Game:
         simulation = Simulation(self.simulation.board, self.simulation.rules)
         simulation.generation = self.simulation.generation
         simulation.random.setstate(self.simulation.random.getstate())
-        clone = Game(simulation, self.agents_enabled, self.round_limit, self.victory_reward)
+        clone = Game(simulation, self.agents_enabled, self.round_limit, self.victory_reward, self.automaton_rounds)
         clone.players = {color: replace(player) for color, player in self.players.items()}
         clone.round, clone.phase_index, clone.order = self.round, self.phase_index, self.order
         clone.done, clone.winner = self.done, self.winner
         clone.touched = {color: set(cells) for color, cells in self.touched.items()}
         clone.rewarded_empty = set(self.rewarded_empty)
         return clone
+
+    @property
+    def automaton_active(self):
+        """Whether the upcoming maintenance phase includes autonomous changes."""
+        return self.automaton_rounds is None or self.round < self.automaton_rounds
 
     @property
     def active_color(self):
@@ -96,7 +104,7 @@ class Game:
         if self.done:
             return "Партия завершена"
         if self.phase_index == 0:
-            return "Автомат"
+            return "Автомат" if self.automaton_active else "Растворение и доход"
         return "Синий агент" if self.active_color == Color.BLUE else "Красный агент"
 
     def _score_changes(self, before: Board):
@@ -111,8 +119,8 @@ class Game:
             if new != Color.EMPTY:
                 if old != Color.EMPTY:
                     rewards[new] += 5
-                elif (after.points[r][c] == Color.EMPTY and (r, c) not in self.rewarded_empty):
-                    rewards[new] += 2
+                elif (r, c) not in self.rewarded_empty:
+                    rewards[new] += 5
                     self.rewarded_empty.add((r, c))
         for color in SPECIES:
             self.players[color].score += rewards[color]
@@ -140,7 +148,8 @@ class Game:
         if self.done or self.phase_index != 0:
             raise ValueError("It is not the automaton phase")
         before = self.simulation.board.copy()
-        events = self.simulation.step()
+        autonomous = self.automaton_active
+        events = self.simulation.step(autonomous=autonomous)
         self.round += 1
         self.order = (Color.BLUE, Color.RED) if self.round % 2 else (Color.RED, Color.BLUE)
         rewards = self._score_changes(before)
@@ -155,7 +164,7 @@ class Game:
         if not self.agents_enabled:
             terminal = self._finish()
             rewards = {c: rewards[c] + terminal[c] for c in SPECIES}
-        self.last_result = PhaseResult("Автомат", rewards, automaton=events,
+        self.last_result = PhaseResult("Автомат" if autonomous else "Растворение и доход", rewards, automaton=events,
                                        highlighted_cells=events.highlighted_cells,
                                        highlighted_points=events.highlighted_points)
         return self.last_result
@@ -174,7 +183,9 @@ class Game:
             if (r, c) in self.touched[color]:
                 continue
             point, owner = board.points[r][c], board.owners[r][c]
-            if owner == color:
+            if owner == Color.EMPTY and point == Color.EMPTY and (r, c) not in board.dissolved:
+                actions.append(Action(ActionKind.PLACE, r, c))
+            elif owner == color:
                 if point == Color.EMPTY and (r, c) not in board.dissolved:
                     actions.append(Action(ActionKind.PLACE, r, c))
                 elif point == color:
@@ -200,7 +211,7 @@ class Game:
             return False
         point, owner = board.points[r][c], board.owners[r][c]
         if action.kind == ActionKind.PLACE:
-            return owner == color and point == Color.EMPTY and (r, c) not in board.dissolved
+            return owner in (Color.EMPTY, color) and point == Color.EMPTY and (r, c) not in board.dissolved
         if action.kind == ActionKind.REMOVE:
             return owner == color and point == color and self.simulation.can_remove_interior(r, c, color)
         if action.kind == ActionKind.CAPTURE:

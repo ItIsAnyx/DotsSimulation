@@ -11,16 +11,17 @@ from dots_simulation.model import Color, Rules, Simulation, SPECIES
 
 
 def play_episode(policies, seed, width, height, density, rounds, rules, learn=True,
-                 learning_rate=0.01, gamma=0.995, initial_board=None, active=False):
+                 learning_rate=0.01, gamma=0.995, initial_board=None, active=False, automaton_rounds=8):
     simulation = (Simulation(initial_board, rules, seed) if initial_board is not None else
                   Simulation.random_field(width, height, density, rules=rules, seed=seed))
-    game = Game(simulation, round_limit=rounds)
+    game = Game(simulation, round_limit=rounds, automaton_rounds=automaton_rounds)
     trajectories = {color: [] for color in SPECIES}
     decisions = {color: 0 for color in SPECIES}
     moves = {kind.value: 0 for kind in ActionKind}
     stats = dict(early_passes=0, captures_left_on_pass=0, spent_actions=0,
                  red_learning_return=0.0, blue_learning_return=0.0,
-                 red_final_budget=0, blue_final_budget=0)
+                 red_final_budget=0, blue_final_budget=0, neutral_placements=0,
+                 full_automaton_rounds=0, maintenance_rounds=0)
 
     def credit(rewards):
         # Include opponent and automaton consequences until the next decision.
@@ -36,6 +37,7 @@ def play_episode(policies, seed, width, height, density, rounds, rules, learn=Tr
 
     while not game.done:
         if game.phase_index == 0:
+            stats["full_automaton_rounds" if game.automaton_active else "maintenance_rounds"] += 1
             credit(game.advance_automaton().rewards)
             continue
         color = game.active_color
@@ -47,6 +49,8 @@ def play_episode(policies, seed, width, height, density, rounds, rules, learn=Tr
                 stats["early_passes"] += captures > 0
                 stats["captures_left_on_pass"] += captures
             policies[color].cache_gradient(decision)
+            if action.kind == ActionKind.PLACE and game.simulation.board.owners[action.row][action.col] == Color.EMPTY:
+                stats["neutral_placements"] += 1
             trajectories[color].append(decision)
             decisions[color] += decision.choice_count > 1
             credit(game.apply_action(action))
@@ -66,13 +70,14 @@ def play_episode(policies, seed, width, height, density, rounds, rules, learn=Tr
                 red_gradient_norm=norms[Color.RED], blue_gradient_norm=norms[Color.BLUE], **stats)
 
 
-def evaluate(policies, seeds, width, height, density, rounds, rules, active=False):
+def evaluate(policies, seeds, width, height, density, rounds, rules, active=False, automaton_rounds=8):
     """Freeze weights, play each color against the same inspectable baseline."""
     results = dict(wins=0, losses=0, draws=0, games=0)
     for seed in seeds:
         for color in SPECIES:
             enemy = Color.BLUE if color == Color.RED else Color.RED
-            game = Game(Simulation.random_field(width, height, density, rules=rules, seed=seed), round_limit=rounds)
+            game = Game(Simulation.random_field(width, height, density, rules=rules, seed=seed),
+                        round_limit=rounds, automaton_rounds=automaton_rounds)
             clone = TinyPolicy.from_dict(policies[color].as_dict(), seed + int(color))
             agents = {color: NeuralAgent(clone, active=active), enemy: HeuristicAgent()}
             while not game.done:
@@ -95,7 +100,8 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.995, help="Discount per game round, not per action")
     parser.add_argument("--allow-early-pass", action="store_true", help="Compatibility flag: early PASS is already allowed by default")
     parser.add_argument("--legacy-active", action="store_true", help="Explicitly enable the old hand-written capture/PASS guard")
-    parser.add_argument("--dissolve-chance", type=float, default=0.0005)
+    parser.add_argument("--dissolve-chance", type=float, default=0.02)
+    parser.add_argument("--automaton-rounds", type=int, default=8, help="Full automaton rounds; 0 disables, -1 unlimited; dissolution always runs")
     parser.add_argument("--random-birth-chance", type=float, default=0.2)
     parser.add_argument("--output", default="models/selfplay.json")
     parser.add_argument("--resume", help="Load weights and running reward baselines")
@@ -103,7 +109,7 @@ def main():
     args = parser.parse_args()
     if (min(args.episodes, args.rounds, args.width, args.height) < 1 or args.eval_games < 0
             or not 0 < args.learning_rate <= 1 or not 0 <= args.gamma <= 1
-            or not 0 <= args.density <= 1):
+            or not 0 <= args.density <= 1 or args.automaton_rounds < -1):
         parser.error("Invalid training parameters")
     try:
         rules = Rules(random_birth_chance=args.random_birth_chance,
@@ -111,10 +117,11 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     policies = load_policies(args.resume, args.seed) if args.resume else {c: TinyPolicy(args.seed + int(c)) for c in SPECIES}
+    automaton_rounds = None if args.automaton_rounds == -1 else args.automaton_rounds
     episode_base = min(policy.episodes for policy in policies.values())
     evaluation_seeds = range(args.seed + 1_000_000, args.seed + 1_000_000 + args.eval_games)
     before = evaluate(policies, evaluation_seeds, args.width, args.height, args.density, args.rounds, rules,
-                      active=args.legacy_active and not args.allow_early_pass)
+                      active=args.legacy_active and not args.allow_early_pass, automaton_rounds=automaton_rounds)
     print("Before training vs heuristic:", before, flush=True)
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +131,7 @@ def main():
         for episode in range(args.episodes):
             result = play_episode(policies, args.seed + episode_base + episode, args.width, args.height,
                                   args.density, args.rounds, rules, learning_rate=args.learning_rate, gamma=args.gamma,
-                                  active=args.legacy_active and not args.allow_early_pass)
+                                  active=args.legacy_active and not args.allow_early_pass, automaton_rounds=automaton_rounds)
             row = dict(episode=episode_base + episode + 1, seed=args.seed + episode_base + episode, **result)
             if writer is None:
                 writer = csv.DictWriter(handle, fieldnames=list(row))
@@ -135,7 +142,7 @@ def main():
             # Checkpoint each completed episode so an interrupted run keeps progress.
             save_policies(destination, policies, dict(config=vars(args), rules=asdict(rules), evaluation_before=before))
     after = evaluate(policies, evaluation_seeds, args.width, args.height, args.density, args.rounds, rules,
-                     active=args.legacy_active and not args.allow_early_pass)
+                     active=args.legacy_active and not args.allow_early_pass, automaton_rounds=automaton_rounds)
     save_policies(destination, policies, dict(config=vars(args), rules=asdict(rules),
                                             evaluation_before=before, evaluation_after=after))
     print("After training vs heuristic:", after)
@@ -144,3 +151,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+

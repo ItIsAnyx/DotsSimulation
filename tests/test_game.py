@@ -88,7 +88,7 @@ class GameTests(unittest.TestCase):
         for r, c in ((1, 2), (2, 1), (2, 3), (3, 2)):
             board.set_cell(r, c, Color.BLUE)
         game = Game(Simulation(board, quiet_rules(capture_enabled=True)))
-        self.assertEqual(game.advance().rewards[Color.BLUE], 2)
+        self.assertEqual(game.advance().rewards[Color.BLUE], 5)
         before = game.simulation.board.copy()
         game.simulation.board.set_cell(1, 2)
         game.simulation.capture()

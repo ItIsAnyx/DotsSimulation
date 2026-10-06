@@ -37,6 +37,24 @@ class GuiTests(unittest.TestCase):
         app._change_agents()
         self.assertFalse(any(isinstance(agent, SearchAgent) for agent in app.agents.values()))
 
+    def test_automaton_limit_slider_persists_through_restart_and_new_field(self):
+        app = SimulationApp(self.root, Simulation.random_field(10, 8, seed=17))
+        app.automaton_unlimited.set(False)
+        app.automaton_rounds.set(8.2)
+        app._change_automaton_limit()
+        self.assertEqual(app.game.automaton_rounds, 8)
+        app.restart()
+        self.assertEqual(app.game.automaton_rounds, 8)
+        app.new_field()
+        self.assertEqual(app.game.automaton_rounds, 8)
+        app.automaton_rounds.set(0)
+        app._change_automaton_limit()
+        self.assertFalse(app.game.automaton_active)
+        self.assertIn("только растворение", app.generation.get())
+        app.automaton_unlimited.set(True)
+        app._change_automaton_limit()
+        self.assertIsNone(app.game.automaton_rounds)
+
     def test_render_restart_and_timer_lifecycle(self):
         app = SimulationApp(self.root, Simulation.random_field(10, 8, seed=17))
         app.agent_mode.set("Выключены")

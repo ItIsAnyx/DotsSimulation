@@ -18,7 +18,7 @@ SPECIES = (Color.RED, Color.BLUE)
 @dataclass(frozen=True)
 class Rules:
     random_birth_chance: float = 0.2
-    interior_dissolve_chance: float = 0.0005
+    interior_dissolve_chance: float = 0.02
     growth_probability: float = 0.12
     isolated_death: float = 0.35
     conversion_probability: float = 0.5
@@ -243,8 +243,26 @@ class Simulation:
                     self.board.owners[r][c] != previous[r][c] for r, c in self.board.cells())
         return cells, points
 
-    def step(self):
+    def dissolve_interior(self):
+        """Sequential removals preserve closed contours, including without growth."""
+        positions = set()
+        if self.rules.capture_enabled and self.rules.interior_dissolve_chance > 0:
+            for r, c in self.board.cells():
+                color = self.board.points[r][c]
+                if (color != Color.EMPTY and self.random.random() < self.rules.interior_dissolve_chance
+                        and self.can_remove_interior(r, c, color)):
+                    self.board.set_cell(r, c, Color.EMPTY, color)
+                    self.board.dissolved.add((r, c))
+                    positions.add((r, c))
+        return positions
+
+    def step(self, autonomous=True):
         """One autonomous phase; agents can intervene after this method returns."""
+        if not autonomous:
+            dissolved = self.dissolve_interior()
+            self.generation += 1
+            return StepResult(self.generation, 0, 0, 0, 0, 0,
+                              frozenset(dissolved), frozenset(), len(dissolved))
         old, new, rules = self.board, self.board.copy(), self.rules
         protected = self.protected_points()
         converted_positions = set()
@@ -297,17 +315,7 @@ class Simulation:
         captured_cells, captured_points = self.capture() if rules.capture_enabled else (0, 0)
         if not rules.capture_enabled:
             self.board.owners = [row[:] for row in self.board.points]
-        dissolved_positions = set()
-        if rules.capture_enabled and rules.interior_dissolve_chance > 0:
-            # Sequential checks prevent simultaneous removals from opening a
-            # contour that was safe for each point individually.
-            for r, c in self.board.cells():
-                color = self.board.points[r][c]
-                if (color != Color.EMPTY and self.random.random() < rules.interior_dissolve_chance
-                        and self.can_remove_interior(r, c, color)):
-                    self.board.set_cell(r, c, Color.EMPTY, color)
-                    self.board.dissolved.add((r, c))
-                    dissolved_positions.add((r, c))
+        dissolved_positions = self.dissolve_interior()
         highlighted_points = frozenset(converted_positions | self._captured_point_positions)
         highlighted_cells = frozenset(dissolved_positions | {(r, c) for r, c in old.cells()
                                      if self.board.points[r][c] == Color.EMPTY
